@@ -67,7 +67,7 @@ def create_base(result, inventory):
                             ip = 'NXDOMAIN'
                             break
                         except dns.resolver.LifetimeTimeout:
-                            result['failed_to_resolve'].append(f"Resolve timeout expired for {host.name}. Trying again.\n")
+                            #result['failed_to_resolve'].append(f"Resolve timeout expired for {host.name}. Trying again.\n")
                             can_resolve = False
                         finally:
                             try_count += 1
@@ -134,7 +134,7 @@ def main():
             result['changed'] = True
     
         
-    result['message'] += f'Create base in {base_dir}\n'
+    result['message'] += f'Create base in {base_dir}/v1/Sessions.XML\n'
     module.exit_json(**result)
      
 

@@ -101,7 +101,7 @@ def create_base(result, inventory, base_name):
                             ip = 'NXDOMAIN'
                             break
                         except dns.resolver.LifetimeTimeout:
-                            result['failed_to_resolve'].append(f"Resolve timeout expired for {host.name}. Trying again.\n")
+                            #result['failed_to_resolve'].append(f"Resolve timeout expired for {host.name}. Trying again.\n")
                             can_resolve = False
                         finally:
                             try_count += 1
