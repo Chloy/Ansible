@@ -5,14 +5,16 @@ import os
 import dns.resolver
 import hashlib
 
+# Head of the base
 base_template_head = """<?xml version="1.0" encoding="utf-8"?>
 <ArrayOfSessionData xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
 """
-
+# Tail of the base
 base_template_tail = '\n</ArrayOfSessionData>'
-
+# Template with _keywords_ for futher replacement
 host_template = """  <SessionData SessionId="__org__/__type__/__hostname__" SessionName="__hostname_short__" ImageKey="__image__" Host="__ip__" Port="__port__" Proto="__proto__" PuttySession="__settings__" Username="__username__" ExtraArgs="__args__" />"""
-
+# InventoryManager does not read groups attributes, where defined SPUTTY_IMG
+# So here copy of there values according to device type group
 sputty_img = {
   'c-FW': 'drive_network',
   'c-PC': 'computer',
@@ -20,13 +22,15 @@ sputty_img = {
   'c-SR': 'computer',
   'c-SW': 'drive_network'  
 }
-
+# Def values for hosts
 def_port = '22'
 def_proto = 'SSH'
 def_session = 'Default Settings'
 def_username = ''
 def_args = ''
 
+
+# Calculate file's hash
 def md5(fname):
     hash_md5 = hashlib.md5()
     with open(fname, "rb") as f:
@@ -34,6 +38,8 @@ def md5(fname):
             hash_md5.update(chunk)
     return hash_md5.digest()
 
+# Get module's output dict and path inventory(InventoryManager class)
+# Returns string of the base
 def create_base(result, inventory):
     base = base_template_head
     STAGES = set(['st-BEGIN', 'st-RUN', 'st-CHANGE'])
@@ -46,7 +52,7 @@ def create_base(result, inventory):
             continue
         for host in inventory.groups[org].hosts:
             groups = set([x.name for x in host.groups])
-            # check host in active stage and in o-win group, if not - skip it
+            # check host in active stage, if not - skip it
             if STAGES.intersection(groups) == set():
                 continue
             type = TYPES.intersection(groups)
@@ -60,14 +66,12 @@ def create_base(result, inventory):
                     try_count = 0
                     while not can_resolve and try_count < 2:
                         try:
-                            for rdata in resolver.resolve(host.name):
-                                ip = rdata.address
-                                can_resolve = True
+                            ip = resolver.resolve(host.name)[0].address
+                            can_resolve = True
                         except dns.resolver.NXDOMAIN:
                             ip = 'NXDOMAIN'
                             break
                         except dns.resolver.LifetimeTimeout:
-                            #result['failed_to_resolve'].append(f"Resolve timeout expired for {host.name}. Trying again.\n")
                             can_resolve = False
                         finally:
                             try_count += 1
@@ -84,13 +88,13 @@ def create_base(result, inventory):
             try:
                 base += f"""  <SessionData SessionId="{org.split('-')[1]}/{type.split('-')[1]}/{host.name}" SessionName="{host.name.split('.')[0].lower()}" ImageKey="{sputty_img[type]}" Host="{ip}" Port="{port}" Proto="{proto}" PuttySession="{session}" Username="{username}" ExtraArgs="{args}" />\n"""
             except KeyError:
-                pass
-            
+                result['failed_to_resolve'].append(f"Key error for {host.name}")                            
     base += base_template_tail
     return base
 
 
 def main():
+    # Define module args and check mode support
     module = AnsibleModule(
         argument_spec=dict(
             inventory_dir=dict(required=True),
@@ -98,14 +102,14 @@ def main():
         ),
         supports_check_mode=True
     )
-
+    # Define module's output
     result = dict(
         changed=False,
         message='',
         failed_to_resolve=[],
         dns_servers = []
     )
-
+    # Exit if module run in check mode
     if module.check_mode:
         module.exit_json(**result)
     
@@ -115,8 +119,8 @@ def main():
     data_loader = DataLoader()
     inventory = InventoryManager(
         loader = data_loader,
-        sources=[inventory_file_name])
-
+        sources=[inventory_file_name]
+        )
     base = create_base(result, inventory)
     if not os.path.exists(base_dir) or not os.path.exists(f'{base_dir}/v1'):
         os.makedirs(f'{base_dir}/v1')
@@ -131,14 +135,10 @@ def main():
             FILE.write(base)
         current_hash = md5(f'{base_dir}/v1/Sessions.XML')
         if prev_hash != current_hash:
-            result['changed'] = True
-    
-        
+            result['changed'] = True    
     result['message'] += f'Create base in {base_dir}/v1/Sessions.XML\n'
     module.exit_json(**result)
      
 
 if __name__ == '__main__':
     main()
-
-    
