@@ -1,8 +1,10 @@
 from ansible.module_utils.basic import AnsibleModule
 from ansible_runner import get_inventory
 from dns import resolver
+from re import match, search
 import os
 import hashlib
+import shlex
 
 # Head of the base
 # __root__ is a keyword for futher replacement
@@ -75,9 +77,7 @@ def md5(fname):
             hash_md5.update(chunk)
     return hash_md5.digest()
 
-import os
-from re import match, search
-import shlex
+
 
 def parser(i_dir):
     i_files = os.listdir(i_dir)
@@ -90,7 +90,7 @@ def parser(i_dir):
     for i_file in i_files:
         if 'ORG' in i_file:
             print()
-        with open(f'{i_dir}{i_file}') as F:
+        with open('{inv_dir}{inv_file}'.format(inv_dir=i_dir, inv_file=i_file)) as F:
             lines = F.readlines()
         i = 0
         while i < len(lines):
@@ -106,7 +106,8 @@ def parser(i_dir):
                 while i < len(lines) and match(r'^[ a-zA-Z0-9]', lines[i]):
                     if lines[i][0] == ' ':
                         continue
-                    res['groups'][g_name]['children'].append(lines[i].strip('\n\r'))
+                    org_name = shlex.split(lines[i].strip('\n\r'))[0]
+                    res['groups'][g_name]['children'].append(org_name)
                     i += 1
             elif match(r'^\[.+\]', lines[i]):
                 g_name = search(r'(?<=^\[).+(?=])', lines[i]).group()
@@ -122,15 +123,13 @@ def parser(i_dir):
                         continue
                     attrs = shlex.split(lines[i].strip('\r\n'))
                     if res['hosts'].get(attrs[0]) == None:
-                        res['hosts'][attrs[0]] = {}
+                        res['hosts'][attrs[0]] = {
+                            'vars': {}
+                        }
                     if attrs[0] == 'tm-v-pc-d3w10.es.efsystem.ru':
                         print()
                     if len(attrs) > 1:
                         for k in range(1, len(attrs)):
-                            if res['hosts'][attrs[0]].get('vars') == None:
-                                res['hosts'][attrs[0]] = {
-                                    'vars': {}
-                                }
                             key, val = attrs[k].split('=')
                             res['hosts'][attrs[0]]['vars'][key] = val
                     res['groups'][g_name]['hosts'].append(attrs[0])
@@ -143,32 +142,31 @@ def parser(i_dir):
 # Returns string of the base
 def create_base(result, inventory, base_name):
     base = base_template_head.replace('__root__', base_name)
-    STAGES = set(['st-BEGIN', 'st-RUN', 'st-CHANGE'])
     
     res = resolver.Resolver()
     res.timeout = 5
     result['dns_servers'] = res.nameservers
-    for org in inventory['org']['children']:
-        if inventory.get(org) == None:
+    for org in inventory['groups']['org']['children']:
+        if inventory['groups'].get(org) == None:
             continue
         org_tmp = group_template
         org_tmp = org_tmp.replace('__group_name__', org.split('-')[1])    
-        for host in inventory[org]['hosts']:
+        for host in inventory['groups'][org]['hosts']:
             try:
-                if (not host in inventory['o-win']['hosts'] or
-                    host in inventory['st-END']['hosts'] or 
-                    host in inventory['st-INIT']['hosts'] or 
-                    host in inventory['st-NONE']['hosts'] or
-                    host in inventory['st-TEST']['hosts']):
+                if (not host in inventory['groups']['o-win']['hosts'] or
+                    host in inventory['groups']['st-END']['hosts'] or 
+                    host in inventory['groups']['st-INIT']['hosts'] or 
+                    host in inventory['groups']['st-NONE']['hosts'] or
+                    host in inventory['groups']['st-TEST']['hosts']):
                     continue
             except KeyError:
                 pass
-        
-            if (inventory['_meta']['hostvars'].get(host) != None and
-                inventory['_meta']['hostvars'][host].get('ansible_host') != None):
-                ip = inventory['_meta']['hostvars'][host]['ansible_host']
+
+            if (inventory['hosts'].get(host) != None and
+                inventory['hosts'][host]['vars'].get('ansible_host') != None):
+                ip = inventory['hosts'][host]['vars']['ansible_host']
             else:
-                if host in inventory['a-STAT']['hosts']:
+                if host in inventory['groups']['a-STAT']['hosts']:
                     can_resolve = False
                     try_count = 0
                     while not can_resolve and try_count < 2:
@@ -183,26 +181,26 @@ def create_base(result, inventory, base_name):
                         finally:
                             try_count += 1
                     if not can_resolve:
-                        result['failed_to_resolve'].append(f"Wasn't resolve {host}")                            
-                elif host in inventory['a-DYN']['hosts']:
+                        result['failed_to_resolve'].append("Wasn't resolve {hostname}".format(hostname=host))                            
+                elif host in inventory['groups']['a-DYN']['hosts']:
                     ip = host
 
             ser_tmp = server_template.replace(
                 "__display_name__</displayName>\n          <name>__server_name__",
-                f"{host.split('.')[0].lower()}</displayName>\n          <name>{ip}"
+                "{hostname}</displayName>\n          <name>{ip_add}".format(hostname=host.split('.')[0].lower(), ip_add=ip)
                 )
             # If host has RDP_PORT attribute add connection settings XML template
-            if (inventory['_meta']['hostvars'].get(host) != None and
-                inventory['_meta']['hostvars'][host].get('RDP_PORT') != None):
+            if (inventory['hosts'].get(host) != None and
+                inventory['hosts'][host].get('RDP_PORT') != None):
                 ser_tmp = ser_tmp.replace(
                     '</server>', 
-                    f"{connection_set.replace('__port__', str(inventory['_meta']['hostvars'][host]['RDP_PORT']))}      </server>"
+                    "{conn_set}      </server>".format(conn_set=connection_set.replace('__port__', str(inventory['hosts'][host]['RDP_PORT'])))
                     )
             # if host in c-SR group add it in ser_collector
             # if in c-PC - add in pc_collector
-            if host in inventory['c-SR']['hosts']:
+            if host in inventory['groups']['c-SR']['hosts']:
                 ser_collector.append(ser_tmp)
-            elif host in inventory['c-PC']['hosts']:
+            elif host in inventory['groups']['c-PC']['hosts']:
                 pc_collector.append(ser_tmp)
         
         org_tmp = org_tmp.replace('__SR__', ''.join(ser_collector))
@@ -240,28 +238,22 @@ def main():
     inventory_dir = module.params['inventory_dir']
     base_dir = module.params['base_dir']
     base_name = module.params['base_name']
-    # inventory = get_inventory(
-    #     action='list', 
-    #     inventories=[inventory_dir],
-    #     quiet=True,
-    #     response_format='json',
-    #     export=True
-    #     )[0]
 
     inventory = parser(inventory_dir)
     base = create_base(result, inventory, base_name)
-    if not os.path.exists(f'{base_dir}{base_name}.rdg'):
-        with open(f'{base_dir}{base_name}.rdg', 'w') as FILE:
+    filepath = '{b_dir}{b_name}.rdg'.format(b_dir=base_dir, b_name=base_name)
+    if not os.path.exists(filepath):
+        with open(filepath, 'w') as FILE:
             FILE.write(base)
         result['changed'] = True
     else:
-        prev_hash = md5(f'{base_dir}{base_name}.rdg')
-        with open(f'{base_dir}{base_name}.rdg', 'w') as FILE:
+        prev_hash = md5(filepath)
+        with open(filepath, 'w') as FILE:
             FILE.write(base)
-        current_hash = md5(f'{base_dir}{base_name}.rdg')
+        current_hash = md5(filepath)
         if prev_hash != current_hash:
             result['changed'] = True        
-    result['message'] += f'Create base in {base_dir}{base_name}.rdg\n'
+    result['message'] += 'Create base in {f_name}\n'.format(f_name=filepath)
     module.exit_json(**result)
      
 
